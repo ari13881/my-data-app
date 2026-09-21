@@ -9,7 +9,7 @@ Streamlit Cloud에 올릴 때는 이 파일과 requirements.txt를 같은 저장
 """
 
 # ── 1. 필요한 도구들 불러오기 ───────────────────────────────────────────
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo  # 파이썬에 기본으로 들어 있는 시간대(timezone) 도구
 
 import pandas as pd      # 표를 다루는 도구
@@ -29,14 +29,13 @@ st.set_page_config(page_title="어제의 박스오피스", page_icon="🎬", lay
 
 
 # ── 3. '어제' 날짜 계산하기 ────────────────────────────────────────────
-def get_yesterday_kst() -> str:
-    """한국 시간 기준 어제 날짜를 'yyyymmdd' 여덟 자리 문자열로 돌려줍니다.
+def get_yesterday_kst() -> date:
+    """한국 시간 기준 '어제'를 날짜(date) 형태로 돌려줍니다.
 
-    오늘 자료는 아직 집계 전이라 어제를 조회합니다.
+    오늘 자료는 아직 집계 전이라, 달력에서 고를 수 있는 가장 늦은 날짜로 씁니다.
     """
-    now_kst = datetime.now(KST)          # 지금 시각을 한국 시간으로
-    yesterday = now_kst - timedelta(days=1)  # 하루 빼기
-    return yesterday.strftime("%Y%m%d")  # 예: 20260916
+    now_kst = datetime.now(KST)              # 지금 시각을 한국 시간으로
+    return (now_kst - timedelta(days=1)).date()  # 하루 빼고 날짜 부분만
 
 
 # ── 4. API 호출하기 (한 시간 동안 기억) ────────────────────────────────
@@ -69,6 +68,16 @@ def to_dataframe(movie_list: list) -> pd.DataFrame:
     # 순위대로 정렬 (혹시 순서가 섞여서 와도 안전하게)
     df = df.sort_values("rank").reset_index(drop=True)
 
+    # 전날 대비 순위 증감을 화살표로 표현합니다.
+    # rankInten 이 양수면 순위가 오른 것, 음수면 내린 것, 0이면 그대로입니다.
+    df["증감"] = df["rankInten"].apply(make_arrow)
+
+    # 누적관객이 100만 명을 넘으면 영화명 옆에 트로피를 붙입니다.
+    df["movieNm"] = df.apply(
+        lambda row: f"🏆 {row['movieNm']}" if row["audiAcc"] >= 1_000_000 else row["movieNm"],
+        axis=1,
+    )
+
     # 사람이 읽기 좋은 한국어 이름으로 열 이름 바꾸기
     df = df.rename(
         columns={
@@ -83,6 +92,22 @@ def to_dataframe(movie_list: list) -> pd.DataFrame:
     return df
 
 
+def make_arrow(rank_inten) -> str:
+    """순위 증감 숫자를 화살표 글자로 바꿉니다.
+
+    화살표를 '순위' 열에 직접 붙이지 않고 별도의 '증감' 열로 만드는 이유는,
+    순위 열을 숫자로 남겨 두어야 표에서 정렬이 제대로 되기 때문입니다.
+    """
+    if pd.isna(rank_inten):      # 값이 없거나 숫자로 못 바꾼 경우
+        return "-"
+    value = int(rank_inten)
+    if value > 0:
+        return f"🔺 {value}"     # 빨간 위 화살표 = 순위 상승
+    if value < 0:
+        return f"🔽 {abs(value)}"  # 파란 아래 화살표 = 순위 하락
+    return "-"                   # 변동 없음 (신규 진입도 0으로 옵니다)
+
+
 # ── 6. 오류 안내 문구 ──────────────────────────────────────────────────
 def show_error(title: str, hints: list) -> None:
     """빈 화면 대신, 무엇을 확인해야 하는지 한국어로 알려 줍니다."""
@@ -95,10 +120,23 @@ def show_error(title: str, hints: list) -> None:
 # ── 7. 화면 그리기 (여기서부터 실제로 앱이 돌아갑니다) ─────────────────
 st.title("🎬 어제의 박스오피스")
 
-target_dt = get_yesterday_kst()
-# 20260916 → 2026-09-16 처럼 보기 좋게 표시
-pretty_date = f"{target_dt[:4]}-{target_dt[4:6]}-{target_dt[6:]}"
-st.caption(f"조회 날짜: {pretty_date} (한국 시간 기준 어제) · 자료 출처: 영화진흥위원회(KOBIS)")
+yesterday = get_yesterday_kst()
+
+# 달력에서 날짜를 고릅니다.
+# max_value=yesterday 이므로 오늘과 미래 날짜는 아예 선택되지 않습니다. (오늘은 아직 집계 전)
+selected_date = st.date_input(
+    "조회할 날짜를 골라 주세요",
+    value=yesterday,          # 처음 열면 어제가 선택되어 있습니다
+    min_value=date(2004, 1, 1),  # KOBIS 자료가 있는 가장 이른 시기
+    max_value=yesterday,      # 고를 수 있는 가장 늦은 날짜 = 어제
+    format="YYYY-MM-DD",
+)
+
+# API에 보낼 때는 'yyyymmdd' 여덟 자리 문자열이어야 합니다. 예: 20260916
+target_dt = selected_date.strftime("%Y%m%d")
+pretty_date = selected_date.strftime("%Y-%m-%d")  # 화면에 보여 줄 때는 보기 좋게
+
+st.caption(f"조회 날짜: {pretty_date} · 자료 출처: 영화진흥위원회(KOBIS)")
 
 # 다시 불러오기 버튼: 저장해 둔 결과를 지우고 새로 호출합니다.
 if st.button("🔄 새로 불러오기"):
@@ -164,14 +202,10 @@ if "faultInfo" in data:
 # (4) 영화 목록 꺼내기 — 상자가 비어 있을 수 있으니 .get 으로 안전하게 꺼냅니다.
 movie_list = data.get("boxOfficeResult", {}).get("dailyBoxOfficeList", [])
 if not movie_list:
-    show_error(
-        f"{pretty_date} 의 박스오피스 자료가 비어 있습니다.",
-        [
-            "해당 날짜의 집계가 아직 끝나지 않았을 수 있습니다. (보통 오전 중 갱신)",
-            "잠시 뒤 **새로 불러오기** 버튼을 눌러 주세요.",
-            "날짜가 너무 예전이면 자료가 없을 수 있습니다.",
-        ],
-    )
+    st.warning(f"{pretty_date} 은(는) 아직 집계 전입니다.")
+    st.markdown("**확인해 볼 것**")
+    st.markdown("- 일별 박스오피스는 보통 다음 날 오전에 갱신됩니다. 잠시 뒤 **새로 불러오기** 버튼을 눌러 주세요.")
+    st.markdown("- 더 이전 날짜를 골라 보시면 자료를 확인할 수 있습니다.")
     st.stop()
 
 # (5) 표로 변환
@@ -199,13 +233,16 @@ st.divider()
 # (8) 전체 표
 st.subheader("📋 전체 순위")
 st.dataframe(
-    df[["순위", "영화명", "개봉일", "관객수", "누적관객", "스크린수"]],
+    df[["순위", "증감", "영화명", "개봉일", "관객수", "누적관객", "스크린수"]],
     hide_index=True,
     use_container_width=True,
     column_config={
+        "증감": st.column_config.TextColumn("증감", help="전날 대비 순위 변화 (🔺 상승 / 🔽 하락)"),
         # 숫자에 천 단위 쉼표를 붙여 보여 줍니다. (정렬은 여전히 숫자 기준)
         "관객수": st.column_config.NumberColumn(format="%,d"),
         "누적관객": st.column_config.NumberColumn(format="%,d"),
         "스크린수": st.column_config.NumberColumn(format="%,d"),
     },
 )
+
+st.caption("🔺 전날보다 순위 상승 · 🔽 전날보다 순위 하락 · 🏆 누적 관객 100만 명 돌파")
